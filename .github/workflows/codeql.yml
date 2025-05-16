@@ -1,181 +1,177 @@
-name: GHAS with HTML Report
+name: CodeQL Analysis
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  scan-codeql:
+  analyze:
     name: CodeQL Analysis (${{ matrix.language }})
     runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
-      fail-fast: false
       matrix:
-        language: [typescript, javascript, html, scss, solidity, pug]
-    outputs:
-      lang: ${{ matrix.language }}
-
+        language: [javascript, typescript, html, scss, solidity, pug]
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Try Initialize CodeQL
-        continue-on-error: true
-        id: init
+      - name: Initialize CodeQL
+        id: init-codeql
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
+        continue-on-error: true
 
       - name: Autobuild
-        if: steps.init.outcome == 'success'
         uses: github/codeql-action/autobuild@v3
+        if: success() || failure()  # Always attempt it
 
       - name: Perform CodeQL Analysis
-        if: steps.init.outcome == 'success'
         uses: github/codeql-action/analyze@v3
         with:
           output: sarif-results
-          category: '/language:${{ matrix.language }}'
-
-      - name: Generate fallback JSON if CodeQL failed
-        if: steps.init.outcome != 'success'
-        run: |
-          mkdir -p combined-json
-          echo "{\"language\": \"${{ matrix.language }}\", \"fileCount\": 0, \"lineCount\": 0, \"issues\": [], \"supported\": false}" > combined-json/${{ matrix.language }}.json
+        if: success()
 
       - name: Convert SARIF to JSON
-        if: steps.init.outcome == 'success'
+        if: success()
         run: |
           mkdir -p combined-json
-          SARIF=$(find sarif-results -name "*.sarif" | head -n 1)
-          FILE_COUNT=$(find . -type f -name "*.${{ matrix.language }}" | wc -l || echo 0)
-          LINE_COUNT=$(find . -type f -name "*.${{ matrix.language }}" -exec cat {} + | wc -l || echo 0)
-          jq --arg lang "${{ matrix.language }}" \
-             --argjson fileCount $FILE_COUNT \
-             --argjson lineCount $LINE_COUNT \
-             'def safe(f): if f then f else "N/A"; {
-               language: $lang,
-               fileCount: $fileCount,
-               lineCount: $lineCount,
-               supported: true,
-               issues: [.runs[].results[]? | {
-                 ruleId,
-                 message: .message.text,
-                 file: .locations[0].physicalLocation.artifactLocation.uri,
-                 line: .locations[0].physicalLocation.region.startLine,
-                 snippet: (.locations[0].physicalLocation.region.snippet.text // "N/A"),
-                 explanation: (.partialFingerprints.explanation // "N/A"),
-                 remediation: (.partialFingerprints.remediation // "N/A")
-               }]
-             }' "$SARIF" > combined-json/${{ matrix.language }}.json
 
-      - name: Upload Language JSON
-        uses: actions/upload-artifact@v4
-        with:
-          name: lang-${{ matrix.language }}
-          path: combined-json/${{ matrix.language }}.json
+          file="sarif-results/${{ matrix.language }}.sarif"
+          lang="${{ matrix.language }}"
 
-  combine-json:
-    name: Combine All JSONs
+          issue_count=$(jq '[.runs[].results[]] | length' "$file")
+          file_count=$(jq '[.runs[].results[].locations[0].physicalLocation.artifactLocation.uri] | length' "$file")
+          line_count=$(jq '[.runs[].results[].locations[0].physicalLocation.region.startLine] | length' "$file")
+
+          jq -n --arg language "$lang" \
+                --argjson issueCount "$issue_count" \
+                --argjson fileCount "$file_count" \
+                --argjson lineCount "$line_count" \
+                --argjson supported true \
+                --slurpfile issues <(jq '[.runs[].results[]]' "$file") \
+                '{
+                  language: $language,
+                  fileCount: $fileCount,
+                  lineCount: $lineCount,
+                  issues: $issues[0],
+                  supported: $supported
+                }' > combined-json/"$lang".json
+
+      - name: Create Placeholder JSON for Unsupported Language
+        if: failure()
+        run: |
+          mkdir -p combined-json
+          echo '{
+            "language": "${{ matrix.language }}",
+            "fileCount": 0,
+            "lineCount": 0,
+            "issues": [],
+            "supported": false
+          }' > combined-json/${{ matrix.language }}.json
+
+  combine:
+    name: Combine Results
     runs-on: ubuntu-latest
-    needs: scan-codeql
-
+    needs: analyze
     steps:
-      - name: Download all language JSONs
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download JSON artifacts
         uses: actions/download-artifact@v4
         with:
-          path: combined
+          name: combined-json
+          path: combined-json
 
-      - name: Combine into single JSON
+      - name: Combine all JSONs
         run: |
-          mkdir -p report
-          jq -s '.' combined/lang-*/*.json > report/final-ghas.json
+          jq -s '.' combined-json/*.json > combined.json
 
-      - name: Upload Final JSON
+      - name: Upload combined JSON
         uses: actions/upload-artifact@v4
         with:
-          name: combined-ghas-json
-          path: report/final-ghas.json
+          name: combined-results
+          path: combined.json
 
-  generate-html:
+  report:
     name: Generate HTML Report
     runs-on: ubuntu-latest
-    needs: combine-json
-
+    needs: combine
     steps:
-      - name: Download Final JSON
+      - name: Download combined JSON
         uses: actions/download-artifact@v4
         with:
-          name: combined-ghas-json
+          name: combined-results
           path: .
 
-      - name: Generate HTML
+      - name: Generate HTML Report
         run: |
-          JSON="final-ghas.json"
-          HTML="ghas-report.html"
+          node <<'EOF'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('combined.json', 'utf8'));
 
-          {
-            echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Combined Report</title>"
-            echo "<style>
-              body { font-family: Arial; padding: 20px; }
-              h1, h2, h3 { color: #2c3e50; }
-              pre { background: #f4f4f4; padding: 10px; border: 1px solid #ccc; white-space: pre-wrap; }
-              .issue { border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 5px; }
-            </style></head><body>"
+          const supported = data.filter(d => d.supported);
+          const unsupported = data.filter(d => !d.supported);
 
-            echo "<h1>🔍 GHAS Consolidated Report</h1>"
+          let totalFiles = supported.reduce((a, b) => a + b.fileCount, 0);
+          let totalLines = supported.reduce((a, b) => a + b.lineCount, 0);
+          let totalIssues = supported.reduce((a, b) => a + b.issues.length, 0);
 
-            SUPPORTED=""
-            UNSUPPORTED=""
+          let html = `
+          <html>
+          <head>
+            <title>CodeQL Report</title>
+            <style>
+              body { font-family: sans-serif; padding: 20px; }
+              .issue { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+              .summary { background: #f5f5f5; padding: 10px; margin-bottom: 20px; }
+              pre { background: #eee; padding: 10px; overflow-x: auto; }
+            </style>
+          </head>
+          <body>
+            <h1>CodeQL Scan Report</h1>
+            <div class="summary">
+              <p><strong>Total Files:</strong> ${totalFiles}</p>
+              <p><strong>Total Lines:</strong> ${totalLines}</p>
+              <p><strong>Total Issues:</strong> ${totalIssues}</p>
+              <p><strong>Supported Languages:</strong> ${supported.map(l => l.language + ': ' + l.issues.length + ' issues').join(', ')}</p>
+              <p><strong>Unsupported Languages:</strong> ${unsupported.map(l => l.language + ': Not supported').join(', ')}</p>
+            </div>
+          `;
 
-            jq -c '.[]' "$JSON" | while read -r entry; do
-              lang=$(echo "$entry" | jq -r '.language')
-              fcount=$(echo "$entry" | jq -r '.fileCount')
-              lcount=$(echo "$entry" | jq -r '.lineCount')
-              supported=$(echo "$entry" | jq -r '.supported')
-              icount=$(echo "$entry" | jq -r '.issues | length')
+          supported.forEach(entry => {
+            entry.issues.forEach(issue => {
+              const ruleId = issue.ruleId || "N/A";
+              const message = issue.message?.text?.replace(/\\n/g, '<br>') || "N/A";
+              const fileLocation = issue.locations?.[0]?.physicalLocation?.artifactLocation?.uri || "N/A";
+              const startLine = issue.locations?.[0]?.physicalLocation?.region?.startLine || "N/A";
+              const snippet = issue.codeFlows?.[0]?.threadFlows?.[0]?.locations?.[0]?.location?.physicalLocation?.contextRegion?.snippet?.text || "N/A";
+              const explanation = issue.help?.text || "N/A";
+              const remediation = issue.help?.markdown || "N/A";
 
-              echo "<h2>📁 Language: <code>$lang</code></h2>"
-              echo "<ul><li><strong>Source Files:</strong> $fcount</li>"
-              echo "<li><strong>Total Lines:</strong> $lcount</li>"
-              echo "<li><strong>Total Issues:</strong> $icount</li></ul>"
+              html += `
+                <div class="issue">
+                  <h2>Rule: ${ruleId}</h2>
+                  <p><strong>File:</strong> ${fileLocation}:${startLine}</p>
+                  <p><strong>Finding:</strong> ${message}</p>
+                  <p><strong>Code Snippet:</strong><br><pre>${snippet}</pre></p>
+                  <p><strong>Explanation:</strong> ${explanation}</p>
+                  <p><strong>Remediation:</strong> ${remediation}</p>
+                </div>
+              `;
+            });
+          });
 
-              if [ "$supported" = "true" ]; then
-                SUPPORTED+="$lang ($icount), "
-              else
-                UNSUPPORTED+="$lang (Not Supported), "
-              fi
-
-              if [ "$supported" = "true" ] && [ "$icount" -gt 0 ]; then
-                echo "$entry" | jq -c '.issues[]' | while read -r issue; do
-                  rule=$(echo "$issue" | jq -r '.ruleId')
-                  msg=$(echo "$issue" | jq -r '.message')
-                  file=$(echo "$issue" | jq -r '.file')
-                  line=$(echo "$issue" | jq -r '.line')
-                  code=$(echo "$issue" | jq -r '.snippet' | sed ':a;N;$!ba;s/\n/<br>/g')
-                  explanation=$(echo "$issue" | jq -r '.explanation')
-                  remediation=$(echo "$issue" | jq -r '.remediation')
-
-                  echo "<div class='issue'>"
-                  echo "<h3>🔹 Rule: $rule</h3>"
-                  echo "<p><strong>File:</strong> $file:$line</p>"
-                  echo "<p><strong>Finding:</strong> $msg</p>"
-                  echo "<p><strong>Code Snippet:</strong></p><pre>${code}</pre>"
-                  echo "<p><strong>Explanation:</strong> $explanation</p>"
-                  echo "<p><strong>Remediation:</strong> $remediation</p>"
-                  echo "</div>"
-                done
-              fi
-            done
-
-            echo "<h2>🧾 Summary</h2>"
-            echo "<p><strong>Supported Languages:</strong> ${SUPPORTED%, }</p>"
-            echo "<p><strong>Unsupported Languages:</strong> ${UNSUPPORTED%, }</p>"
-
-            echo "</body></html>"
-          } > $HTML
+          html += '</body></html>';
+          fs.writeFileSync('report.html', html);
+          EOF
 
       - name: Upload HTML Report
         uses: actions/upload-artifact@v4
         with:
-          name: GHAS-HTML-Report
-          path: ghas-report.html
+          name: codeql-html-report
+          path: report.html
