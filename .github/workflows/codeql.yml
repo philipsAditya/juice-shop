@@ -6,28 +6,11 @@ on:
 jobs:
   codeql-analysis:
     name: CodeQL Analysis
-    runs-on: macos-latest
+    runs-on: macos-latest  # For Swift projects, adjust if needed
     permissions:
       actions: read
       contents: read
       security-events: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: typescript
-            build-mode: none
-          - language: javascript
-            build-mode: none
-          - language: html
-            build-mode: none
-          - language: scss
-            build-mode: none
-          - language: solidity
-            build-mode: none
-          - language: pug
-            build-mode: none
 
     steps:
       - name: Checkout repository
@@ -36,27 +19,25 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: html,javascript,pug,scss,solidity,typescript
 
       - name: Autobuild
-        if: matrix.build-mode == 'autobuild'
         uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
           output: sarif-results
-          category: '/language:${{ matrix.language }}'
+          category: '/language:multi'
 
-      - name: Generate HTML Report
+      - name: Generate Combined HTML Report
         run: |
-          echo "📄 Generating GHAS HTML report..."
+          echo "📄 Generating combined GHAS HTML report..."
 
           SARIF_FILE=$(find sarif-results -name "*.sarif" | head -n 1)
 
           {
-            echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Report - ${{ matrix.language }}</title>"
+            echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Combined Report</title>"
             echo "<style>
               body { font-family: Arial, sans-serif; padding: 20px; }
               h1, h2, h3 { color: #2c3e50; }
@@ -64,16 +45,16 @@ jobs:
               .issue { border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; border-radius: 5px; }
             </style></head><body>"
 
-            echo "<h1>🔍 GHAS Executive Summary for <code>${{ matrix.language }}</code></h1>"
+            echo "<h1>🔍 GHAS Executive Summary (All Languages)</h1>"
 
-            FILE_COUNT=$(find . -type f -name "*.${{ matrix.language }}" | wc -l || echo 0)
-            LINE_COUNT=$(find . -type f -name "*.${{ matrix.language }}" -exec cat {} + | wc -l || echo 0)
-            ISSUE_COUNT=$(jq -r '.runs[].results[]?.ruleId' "$SARIF_FILE" | wc -l || echo 0)
+            FILE_COUNT=$(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.html" -o -name "*.scss" -o -name "*.sol" -o -name "*.pug" \) | wc -l || echo 0)
+            LINE_COUNT=$(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.html" -o -name "*.scss" -o -name "*.sol" -o -name "*.pug" \) -exec cat {} + | wc -l || echo 0)
+            ISSUE_COUNT=$(jq '[.runs[].results[]] | length' "$SARIF_FILE" || echo 0)
 
             echo "<ul>"
             echo "<li><strong>Source Files:</strong> $FILE_COUNT</li>"
             echo "<li><strong>Total Lines:</strong> $LINE_COUNT</li>"
-            echo "<li><strong>Total Issues (All Severities):</strong> $ISSUE_COUNT</li>"
+            echo "<li><strong>Total Issues:</strong> $ISSUE_COUNT</li>"
             echo "</ul>"
 
             echo "<h2>📊 Issue Category Breakdown</h2><ul>"
@@ -89,12 +70,18 @@ jobs:
                 .message.text,
                 .locations[0].physicalLocation.artifactLocation.uri,
                 .locations[0].physicalLocation.region.startLine,
-                .locations[0].physicalLocation.region.snippet.text,
-                .partialFingerprints.explanation // "N/A",
-                .partialFingerprints.remediation // "N/A"
+                .locations[0].physicalLocation.region.snippet.text // "No snippet available",
+                .partialFingerprints.explanation // "No explanation provided",
+                .partialFingerprints.remediation // "No remediation provided"
               ] |
               @tsv
             ' "$SARIF_FILE" | while IFS=$'\t' read -r ruleId message file line snippet explanation remediation; do
+                # Escape and format line breaks
+                message=$(echo "$message" | sed 's/\\n/<br>/g')
+                snippet=$(echo "$snippet" | sed 's/\\n/<br>/g')
+                explanation=$(echo "$explanation" | sed 's/\\n/<br>/g')
+                remediation=$(echo "$remediation" | sed 's/\\n/<br>/g')
+
                 echo "<div class='issue'>"
                 echo "<h3>🔹 Rule: $ruleId</h3>"
                 echo "<p><strong>File:</strong> $file:$line</p>"
@@ -106,10 +93,10 @@ jobs:
             done
 
             echo "</body></html>"
-          } > ghas-report-${{ matrix.language }}.html
+          } > ghas-combined-report.html
 
-      - name: Upload HTML Report
+      - name: Upload Combined HTML Report
         uses: actions/upload-artifact@v4
         with:
-          name: GHAS-Report-${{ matrix.language }}
-          path: ghas-report-${{ matrix.language }}.html
+          name: GHAS-Combined-Report
+          path: ghas-combined-report.html
