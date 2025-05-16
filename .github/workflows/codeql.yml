@@ -1,12 +1,62 @@
-name: GHAS with HTML Report
+name: GHAS with HTML Report (Robust)
 
 on:
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
 
 jobs:
+  detect-languages:
+    name: Detect Valid CodeQL Languages
+    runs-on: ubuntu-latest
+    outputs:
+      langs: ${{ steps.setlangs.outputs.valid_langs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect valid CodeQL languages
+        id: setlangs
+        run: |
+          # All candidate languages
+          ALL_LANGS="javascript typescript csharp cpp java python ruby go"
+          
+          VALID_LANGS=""
+          for lang in $ALL_LANGS; do
+            case "$lang" in
+              javascript)
+                [ -n "$(find . -name '*.js' -o -name '*.jsx' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              typescript)
+                [ -n "$(find . -name '*.ts' -o -name '*.tsx' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              csharp)
+                [ -n "$(find . -name '*.cs' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              cpp)
+                [ -n "$(find . -name '*.cpp' -o -name '*.h' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              java)
+                [ -n "$(find . -name '*.java' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              python)
+                [ -n "$(find . -name '*.py' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              ruby)
+                [ -n "$(find . -name '*.rb' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+              go)
+                [ -n "$(find . -name '*.go' 2>/dev/null)" ] && VALID_LANGS="$VALID_LANGS,$lang"
+                ;;
+            esac
+          done
+
+          VALID_LANGS="${VALID_LANGS#,}" # Trim leading comma
+          echo "Detected valid languages: $VALID_LANGS"
+          echo "valid_langs=$VALID_LANGS" >> $GITHUB_OUTPUT
+
   codeql-analysis:
-    name: CodeQL Analysis
-    runs-on: macos-latest  # For Swift projects, adjust if needed
+    name: Run CodeQL on Valid Languages
+    needs: detect-languages
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
@@ -19,7 +69,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: html,javascript,pug,scss,solidity,typescript
+          languages: ${{ needs.detect-languages.outputs.langs }}
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
@@ -30,10 +80,9 @@ jobs:
           output: sarif-results
           category: '/language:multi'
 
-      - name: Generate Combined HTML Report
+      - name: Generate HTML Report
         run: |
-          echo "📄 Generating combined GHAS HTML report..."
-
+          echo "Generating GHAS Report..."
           SARIF_FILE=$(find sarif-results -name "*.sarif" | head -n 1)
 
           {
@@ -45,10 +94,10 @@ jobs:
               .issue { border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; border-radius: 5px; }
             </style></head><body>"
 
-            echo "<h1>🔍 GHAS Executive Summary (All Languages)</h1>"
+            echo "<h1>🔍 GHAS Executive Summary</h1>"
 
-            FILE_COUNT=$(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.html" -o -name "*.scss" -o -name "*.sol" -o -name "*.pug" \) | wc -l || echo 0)
-            LINE_COUNT=$(find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.html" -o -name "*.scss" -o -name "*.sol" -o -name "*.pug" \) -exec cat {} + | wc -l || echo 0)
+            FILE_COUNT=$(find . -type f \( -name "*.ts" -o -name "*.js" \) | wc -l)
+            LINE_COUNT=$(find . -type f \( -name "*.ts" -o -name "*.js" \) -exec cat {} + | wc -l)
             ISSUE_COUNT=$(jq '[.runs[].results[]] | length' "$SARIF_FILE" || echo 0)
 
             echo "<ul>"
@@ -57,45 +106,48 @@ jobs:
             echo "<li><strong>Total Issues:</strong> $ISSUE_COUNT</li>"
             echo "</ul>"
 
-            echo "<h2>📊 Issue Category Breakdown</h2><ul>"
-            jq -r '.runs[].results[]?.ruleId' "$SARIF_FILE" | sort | uniq -c | sort -nr | \
-              awk '{ print "<li>" $2 ": " $1 " issues</li>" }'
-            echo "</ul>"
+            if [ "$ISSUE_COUNT" -eq 0 ]; then
+              echo "<p><strong>No issues were detected in the scanned languages.</strong></p>"
+            else
+              echo "<h2>📊 Issue Breakdown</h2><ul>"
+              jq -r '.runs[].results[]?.ruleId' "$SARIF_FILE" | sort | uniq -c | sort -nr | \
+                awk '{ print "<li>" $2 ": " $1 " issues</li>" }'
+              echo "</ul>"
 
-            echo "<h2>🧾 Detailed Findings</h2>"
-            jq -r '
-              .runs[].results[] |
-              [
-                .ruleId,
-                .message.text,
-                .locations[0].physicalLocation.artifactLocation.uri,
-                .locations[0].physicalLocation.region.startLine,
-                .locations[0].physicalLocation.region.snippet.text // "No snippet available",
-                .partialFingerprints.explanation // "No explanation provided",
-                .partialFingerprints.remediation // "No remediation provided"
-              ] |
-              @tsv
-            ' "$SARIF_FILE" | while IFS=$'\t' read -r ruleId message file line snippet explanation remediation; do
-                # Escape and format line breaks
-                message=$(echo "$message" | sed 's/\\n/<br>/g')
-                snippet=$(echo "$snippet" | sed 's/\\n/<br>/g')
-                explanation=$(echo "$explanation" | sed 's/\\n/<br>/g')
-                remediation=$(echo "$remediation" | sed 's/\\n/<br>/g')
+              echo "<h2>🧾 Detailed Findings</h2>"
+              jq -r '
+                .runs[].results[] |
+                [
+                  .ruleId,
+                  .message.text,
+                  .locations[0].physicalLocation.artifactLocation.uri,
+                  .locations[0].physicalLocation.region.startLine,
+                  .locations[0].physicalLocation.region.snippet.text // "No snippet available",
+                  .partialFingerprints.explanation // "No explanation provided",
+                  .partialFingerprints.remediation // "No remediation provided"
+                ] |
+                @tsv
+              ' "$SARIF_FILE" | while IFS=$'\t' read -r ruleId message file line snippet explanation remediation; do
+                  message=$(echo "$message" | sed 's/\\n/<br>/g')
+                  snippet=$(echo "$snippet" | sed 's/\\n/<br>/g')
+                  explanation=$(echo "$explanation" | sed 's/\\n/<br>/g')
+                  remediation=$(echo "$remediation" | sed 's/\\n/<br>/g')
 
-                echo "<div class='issue'>"
-                echo "<h3>🔹 Rule: $ruleId</h3>"
-                echo "<p><strong>File:</strong> $file:$line</p>"
-                echo "<p><strong>Finding:</strong> $message</p>"
-                echo "<p><strong>Code Snippet:</strong></p><pre>${snippet}</pre>"
-                echo "<p><strong>Explanation:</strong> $explanation</p>"
-                echo "<p><strong>Remediation:</strong> $remediation</p>"
-                echo "</div>"
-            done
+                  echo "<div class='issue'>"
+                  echo "<h3>🔹 Rule: $ruleId</h3>"
+                  echo "<p><strong>File:</strong> $file:$line</p>"
+                  echo "<p><strong>Finding:</strong> $message</p>"
+                  echo "<p><strong>Code Snippet:</strong></p><pre>${snippet}</pre>"
+                  echo "<p><strong>Explanation:</strong> $explanation</p>"
+                  echo "<p><strong>Remediation:</strong> $remediation</p>"
+                  echo "</div>"
+              done
+            fi
 
             echo "</body></html>"
           } > ghas-combined-report.html
 
-      - name: Upload Combined HTML Report
+      - name: Upload HTML Report
         uses: actions/upload-artifact@v4
         with:
           name: GHAS-Combined-Report
