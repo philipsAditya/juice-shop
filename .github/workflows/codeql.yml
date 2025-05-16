@@ -114,17 +114,65 @@ jobs:
           {
             echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Combined Report</title>"
             echo "<style>
-              body { font-family: Arial; padding: 20px; }
+              body { font-family: Arial; padding: 20px; max-width: 1200px; margin: 0 auto; }
               h1, h2, h3 { color: #2c3e50; }
               pre { background: #f4f4f4; padding: 10px; border: 1px solid #ccc; white-space: pre-wrap; }
               .issue { border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 5px; }
+              .summary-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+              .summary-table th, .summary-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              .summary-table th { background-color: #f2f2f2; }
+              .summary-table tr:nth-child(even) { background-color: #f9f9f9; }
+              .warning { color: #f39c12; }
+              .danger { color: #e74c3c; }
+              .safe { color: #27ae60; }
+              .summary-card { margin-bottom: 30px; padding: 15px; border-radius: 5px; background-color: #f8f9fa; border: 1px solid #e9ecef; }
+              .language-section { margin-top: 40px; border-top: 2px solid #eee; padding-top: 20px; }
             </style></head><body>"
 
             echo "<h1>🔍 GHAS Consolidated Report</h1>"
 
-            SUPPORTED=""
-            UNSUPPORTED=""
+            echo "<div class='summary-card'>"
+            echo "<h2>📊 Summary</h2>"
+            echo "<table class='summary-table'>"
+            echo "<tr><th>Language</th><th>Files Scanned</th><th>Lines Scanned</th><th>Issues Found</th><th>Status</th></tr>"
 
+            # First, create a summary table at the top
+            totalIssues=0
+            totalFiles=0
+            totalLines=0
+            
+            jq -c '.[]' "$JSON" | while read -r entry; do
+              lang=$(echo "$entry" | jq -r '.language')
+              fcount=$(echo "$entry" | jq -r '.fileCount')
+              lcount=$(echo "$entry" | jq -r '.lineCount')
+              supported=$(echo "$entry" | jq -r '.supported')
+              icount=$(echo "$entry" | jq -r '.issues | length')
+              
+              totalFiles=$((totalFiles + fcount))
+              totalLines=$((totalLines + lcount))
+              totalIssues=$((totalIssues + icount))
+              
+              statusClass="safe"
+              statusText="No Issues"
+              
+              if [ "$supported" != "true" ]; then
+                statusClass="warning"
+                statusText="Not Supported"
+              elif [ "$icount" -gt 0 ]; then
+                statusClass="danger"
+                statusText="Issues Found"
+              fi
+              
+              echo "<tr><td><strong>$lang</strong></td><td>$fcount</td><td>$lcount</td><td class='$statusClass'><strong>$icount</strong></td><td class='$statusClass'>$statusText</td></tr>"
+            done
+            
+            echo "<tr style='font-weight: bold; background-color: #e9ecef;'><td>TOTAL</td><td>$totalFiles</td><td>$totalLines</td><td>$totalIssues</td><td></td></tr>"
+            echo "</table>"
+            echo "</div>"
+
+            # Then list all issues grouped by language
+            echo "<h2>🔎 Detailed Issues by Language</h2>"
+            
             jq -c '.[]' "$JSON" | while read -r entry; do
               lang=$(echo "$entry" | jq -r '.language')
               fcount=$(echo "$entry" | jq -r '.fileCount')
@@ -132,18 +180,18 @@ jobs:
               supported=$(echo "$entry" | jq -r '.supported')
               icount=$(echo "$entry" | jq -r '.issues | length')
 
-              echo "<h2>📁 Language: <code>$lang</code></h2>"
+              echo "<div class='language-section'>"
+              echo "<h2>📁 $lang</h2>"
               echo "<ul><li><strong>Source Files:</strong> $fcount</li>"
               echo "<li><strong>Total Lines:</strong> $lcount</li>"
-              echo "<li><strong>Total Issues:</strong> $icount</li></ul>"
-
-              if [ "$supported" = "true" ]; then
-                SUPPORTED+="$lang ($icount), "
-              else
-                UNSUPPORTED+="$lang (Not Supported), "
+              echo "<li><strong>Total Issues:</strong> $icount</li>"
+              if [ "$supported" != "true" ]; then
+                echo "<li class='warning'><strong>Status:</strong> Language not supported by CodeQL</li>"
               fi
+              echo "</ul>"
 
               if [ "$supported" = "true" ] && [ "$icount" -gt 0 ]; then
+                echo "<h3>Found Issues:</h3>"
                 echo "$entry" | jq -c '.issues[]' | while read -r issue; do
                   rule=$(echo "$issue" | jq -r '.ruleId')
                   msg=$(echo "$issue" | jq -r '.message')
@@ -162,13 +210,14 @@ jobs:
                   echo "<p><strong>Remediation:</strong> $remediation</p>"
                   echo "</div>"
                 done
+              elif [ "$supported" = "true" ] && [ "$icount" -eq 0 ]; then
+                echo "<p class='safe'><strong>✅ No issues found</strong></p>"
               fi
+              echo "</div>"
             done
 
-            echo "<h2>🧾 Summary</h2>"
-            echo "<p><strong>Supported Languages:</strong> ${SUPPORTED%, }</p>"
-            echo "<p><strong>Unsupported Languages:</strong> ${UNSUPPORTED%, }</p>"
-
+            echo "<hr>"
+            echo "<footer><p>Generated on $(date)</p></footer>"
             echo "</body></html>"
           } > $HTML
 
