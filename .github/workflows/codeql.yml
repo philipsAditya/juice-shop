@@ -140,15 +140,14 @@ jobs:
           name: combined-ghas-json
           path: .
 
-      - name: Process JSON to Remove Duplicates and Beautify Issues
+      - name: Process JSON to Beautify Issues
         run: |
           JSON="final-ghas.json"
           PROCESSED_JSON="processed-ghas.json"
 
           jq 'map(
-            .issues |= (group_by(.file + "|" + .message) | map(.[0])) | # Remove duplicates across related technologies
             .issues |= map(
-              .message |= (. | split("(1)") | join("\n(1)")) # Beautify issues
+              .message |= (. | split("(1)") | map("<li>" + . + "</li>") | join("\n")) # Beautify issues as bulleted list
             )
           )' "$JSON" > "$PROCESSED_JSON"
 
