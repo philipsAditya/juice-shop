@@ -45,8 +45,42 @@ jobs:
         run: |
           mkdir -p combined-json
           SARIF=$(find sarif-results -name "*.sarif" | head -n 1)
-          FILE_COUNT=$(find . -type f -name "*.${{ matrix.language }}" | wc -l || echo 0)
-          LINE_COUNT=$(find . -type f -name "*.${{ matrix.language }}" -exec cat {} + | wc -l || echo 0)
+          
+          # Set file extensions based on language
+          case "${{ matrix.language }}" in
+            "javascript")
+              EXTENSIONS="js jsx mjs cjs"
+              ;;
+            "typescript")
+              EXTENSIONS="ts tsx"
+              ;;
+            "html")
+              EXTENSIONS="html htm"
+              ;;
+            "scss")
+              EXTENSIONS="scss sass css"
+              ;;
+            "solidity")
+              EXTENSIONS="sol"
+              ;;
+            "pug")
+              EXTENSIONS="pug jade"
+              ;;
+            *)
+              EXTENSIONS="${{ matrix.language }}"
+              ;;
+          esac
+          
+          # Count files and lines for the language
+          FILE_COUNT=0
+          LINE_COUNT=0
+          for ext in $EXTENSIONS; do
+            count=$(find . -type f -name "*.$ext" | wc -l || echo 0)
+            FILE_COUNT=$((FILE_COUNT + count))
+            lines=$(find . -type f -name "*.$ext" -exec cat {} + 2>/dev/null | wc -l || echo 0)
+            LINE_COUNT=$((LINE_COUNT + lines))
+          done
+          
           jq --arg lang "${{ matrix.language }}" \
              --argjson fileCount $FILE_COUNT \
              --argjson lineCount $LINE_COUNT \
@@ -110,7 +144,6 @@ jobs:
         run: |
           JSON="final-ghas.json"
           HTML="ghas-report.html"
-
           {
             echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Combined Report</title>"
             echo "<style>
@@ -128,14 +161,11 @@ jobs:
               .summary-card { margin-bottom: 30px; padding: 15px; border-radius: 5px; background-color: #f8f9fa; border: 1px solid #e9ecef; }
               .language-section { margin-top: 40px; border-top: 2px solid #eee; padding-top: 20px; }
             </style></head><body>"
-
             echo "<h1>🔍 GHAS Consolidated Report</h1>"
-
             echo "<div class='summary-card'>"
             echo "<h2>📊 Summary</h2>"
             echo "<table class='summary-table'>"
             echo "<tr><th>Language</th><th>Files Scanned</th><th>Lines Scanned</th><th>Issues Found</th><th>Status</th></tr>"
-
             # First, create a summary table at the top
             totalIssues=0
             totalFiles=0
@@ -169,7 +199,6 @@ jobs:
             echo "<tr style='font-weight: bold; background-color: #e9ecef;'><td>TOTAL</td><td>$totalFiles</td><td>$totalLines</td><td>$totalIssues</td><td></td></tr>"
             echo "</table>"
             echo "</div>"
-
             # Then list all issues grouped by language
             echo "<h2>🔎 Detailed Issues by Language</h2>"
             
@@ -177,7 +206,6 @@ jobs:
               lang=$(echo "$entry" | jq -r '.language')
               icount=$(echo "$entry" | jq -r '.issues | length')
               supported=$(echo "$entry" | jq -r '.supported')
-
               echo "<div class='language-section'>"
               echo "<h2>📁 $lang</h2>"
               
@@ -193,7 +221,6 @@ jobs:
                   code=$(echo "$issue" | jq -r '.snippet' | sed ':a;N;$!ba;s/\n/<br>/g')
                   explanation=$(echo "$issue" | jq -r '.explanation')
                   remediation=$(echo "$issue" | jq -r '.remediation')
-
                   echo "<div class='issue'>"
                   echo "<h3>🔹 Rule: $rule</h3>"
                   echo "<p><strong>File:</strong> $file:$line</p>"
@@ -208,7 +235,6 @@ jobs:
               fi
               echo "</div>"
             done
-
             echo "<hr>"
             echo "<footer><p>Generated on $(date)</p></footer>"
             echo "</body></html>"
