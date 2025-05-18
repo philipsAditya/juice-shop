@@ -144,6 +144,12 @@ jobs:
         run: |
           JSON="final-ghas.json"
           HTML="ghas-report.html"
+          
+          # Calculate totals using jq
+          TOTAL_FILES=$(jq '[.[].fileCount] | add' "$JSON")
+          TOTAL_LINES=$(jq '[.[].lineCount] | add' "$JSON")
+          TOTAL_ISSUES=$(jq '[.[].issues | length] | add' "$JSON")
+          
           {
             echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Combined Report</title>"
             echo "<style>
@@ -166,21 +172,17 @@ jobs:
             echo "<h2>📊 Summary</h2>"
             echo "<table class='summary-table'>"
             echo "<tr><th>Language</th><th>Files Scanned</th><th>Lines Scanned</th><th>Issues Found</th><th>Status</th></tr>"
-            # First, create a summary table at the top
-            totalIssues=0
-            totalFiles=0
-            totalLines=0
             
-            jq -c '.[]' "$JSON" | while read -r entry; do
-              lang=$(echo "$entry" | jq -r '.language')
-              fcount=$(echo "$entry" | jq -r '.fileCount')
-              lcount=$(echo "$entry" | jq -r '.lineCount')
-              supported=$(echo "$entry" | jq -r '.supported')
-              icount=$(echo "$entry" | jq -r '.issues | length')
-              
-              totalFiles=$((totalFiles + fcount))
-              totalLines=$((totalLines + lcount))
-              totalIssues=$((totalIssues + icount))
+            # Generate table rows
+            jq -r '.[] | 
+              @csv "\(.language),\(.fileCount),\(.lineCount),\(.issues | length),\(.supported)"' "$JSON" |
+            while IFS=, read -r lang fcount lcount icount supported; do
+              # Remove quotes from CSV output
+              lang=$(echo "$lang" | sed 's/"//g')
+              fcount=$(echo "$fcount" | sed 's/"//g')
+              lcount=$(echo "$lcount" | sed 's/"//g')
+              icount=$(echo "$icount" | sed 's/"//g')
+              supported=$(echo "$supported" | sed 's/"//g')
               
               statusClass="safe"
               statusText="No Issues"
@@ -196,9 +198,10 @@ jobs:
               echo "<tr><td><strong>$lang</strong></td><td>$fcount</td><td>$lcount</td><td class='$statusClass'><strong>$icount</strong></td><td class='$statusClass'>$statusText</td></tr>"
             done
             
-            echo "<tr style='font-weight: bold; background-color: #e9ecef;'><td>TOTAL</td><td>$totalFiles</td><td>$totalLines</td><td>$totalIssues</td><td></td></tr>"
+            echo "<tr style='font-weight: bold; background-color: #e9ecef;'><td>TOTAL</td><td>$TOTAL_FILES</td><td>$TOTAL_LINES</td><td>$TOTAL_ISSUES</td><td></td></tr>"
             echo "</table>"
             echo "</div>"
+            
             # Then list all issues grouped by language
             echo "<h2>🔎 Detailed Issues by Language</h2>"
             
