@@ -143,7 +143,7 @@ jobs:
       - name: Deduplicate Issues
         run: |
           mkdir -p deduplicated
-          jq 'reduce .[] as $entry ({}; .[$entry.file] //= []; .[$entry.file] += $entry.issues) | to_entries | map({file: .key, issues: .value | unique_by(.ruleId, .message)})' report/final-ghas.json > deduplicated/deduplicated-ghas.json
+          jq 'reduce .[] as $entry ({}; .[$entry.file] //= []; .[$entry.file] += $entry.issues) | to_entries | map({file: .key, issues: (.value | unique_by(.ruleId; .message))})' report/final-ghas.json > deduplicated/deduplicated-ghas.json
 
       - name: Upload Deduplicated JSON
         uses: actions/upload-artifact@v4
