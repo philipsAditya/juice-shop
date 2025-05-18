@@ -1,4 +1,4 @@
-name: GHAS with HTML Report
+name: GHAS with PDF Report
 
 on:
   workflow_dispatch:
