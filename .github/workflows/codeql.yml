@@ -251,3 +251,33 @@ jobs:
         with:
           name: GHAS-HTML-Report
           path: ghas-report.html
+
+  process-json:
+    name: Process JSON
+    runs-on: ubuntu-latest
+    needs: combine-json
+
+    steps:
+      - name: Download Final JSON
+        uses: actions/download-artifact@v4
+        with:
+          name: combined-ghas-json
+          path: .
+
+      - name: Process JSON to Remove Duplicates and Beautify Issues
+        run: |
+          JSON="final-ghas.json"
+          PROCESSED_JSON="processed-ghas.json"
+
+          jq 'map(
+            .issues |= (group_by(.file + "|" + .message) | map(.[0])) | # Remove duplicates across related technologies
+            .issues |= map(
+              .message |= (. | split("(1)") | join("\n(1)")) # Beautify issues
+            )
+          )' "$JSON" > "$PROCESSED_JSON"
+
+      - name: Upload Processed JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: processed-ghas-json
+          path: processed-ghas.json
