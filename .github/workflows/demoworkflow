@@ -1,0 +1,299 @@
+name: GHAS with HTML Report
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan-codeql:
+    name: CodeQL Analysis (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [typescript, javascript, html, scss, solidity, pug]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Try Initialize CodeQL
+        continue-on-error: true
+        id: init
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        if: steps.init.outcome == 'success'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        if: steps.init.outcome == 'success'
+        uses: github/codeql-action/analyze@v3
+        with:
+          output: sarif-results
+          category: '/language:${{ matrix.language }}'
+
+      - name: Generate fallback JSON if CodeQL failed
+        if: steps.init.outcome != 'success'
+        run: |
+          mkdir -p combined-json
+          echo "{\"language\": \"${{ matrix.language }}\", \"fileCount\": 0, \"lineCount\": 0, \"issues\": [], \"supported\": false}" > combined-json/${{ matrix.language }}.json
+
+      - name: Convert SARIF to JSON
+        if: steps.init.outcome == 'success'
+        run: |
+          mkdir -p combined-json
+          SARIF=$(find sarif-results -name "*.sarif" | head -n 1)
+          
+          # Set file extensions based on language
+          case "${{ matrix.language }}" in
+            "javascript")
+              EXTENSIONS="js jsx mjs cjs"
+              ;;
+            "typescript")
+              EXTENSIONS="ts tsx"
+              ;;
+            "html")
+              EXTENSIONS="html htm"
+              ;;
+            "scss")
+              EXTENSIONS="scss sass css"
+              ;;
+            "solidity")
+              EXTENSIONS="sol"
+              ;;
+            "pug")
+              EXTENSIONS="pug jade"
+              ;;
+            *)
+              EXTENSIONS="${{ matrix.language }}"
+              ;;
+          esac
+          
+          # Count files and lines for the language
+          FILE_COUNT=0
+          LINE_COUNT=0
+          for ext in $EXTENSIONS; do
+            count=$(find . -type f -name "*.$ext" | wc -l || echo 0)
+            FILE_COUNT=$((FILE_COUNT + count))
+            lines=$(find . -type f -name "*.$ext" -exec cat {} + 2>/dev/null | wc -l || echo 0)
+            LINE_COUNT=$((LINE_COUNT + lines))
+          done
+          
+          jq --arg lang "${{ matrix.language }}" \
+             --argjson fileCount $FILE_COUNT \
+             --argjson lineCount $LINE_COUNT \
+             '{
+               language: $lang,
+               fileCount: $fileCount,
+               lineCount: $lineCount,
+               supported: true,
+               issues: [.runs[].results[]? | {
+                 ruleId,
+                 message: .message.text,
+                 file: .locations[0].physicalLocation.artifactLocation.uri,
+                 line: .locations[0].physicalLocation.region.startLine,
+                 snippet: (.locations[0].physicalLocation.region.snippet.text // "N/A"),
+                 explanation: (.partialFingerprints.explanation // "N/A"),
+                 remediation: (.partialFingerprints.remediation // "N/A")
+               }]
+             }' "$SARIF" > combined-json/${{ matrix.language }}.json
+
+      - name: Upload Language JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: lang-${{ matrix.language }}
+          path: combined-json/${{ matrix.language }}.json
+
+  combine-json:
+    name: Combine All JSONs
+    runs-on: ubuntu-latest
+    needs: scan-codeql
+
+    steps:
+      - name: Download all language JSONs
+        uses: actions/download-artifact@v4
+        with:
+          path: combined
+
+      - name: Combine into single JSON
+        run: |
+          mkdir -p report
+          jq -s '.' combined/lang-*/*.json > report/final-ghas.json
+
+      - name: Upload Final JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-ghas-json
+          path: report/final-ghas.json
+
+  deduplicate-issues:
+    name: Deduplicate Issues
+    runs-on: ubuntu-latest
+    needs: combine-json
+
+    steps:
+      - name: Download Combined JSON
+        uses: actions/download-artifact@v4
+        with:
+          name: combined-ghas-json
+          path: .
+
+      - name: Deduplicate Issues
+        run: |
+          mkdir -p deduplicated
+          jq 'reduce .[] as $entry ({}; .[$entry.file] //= []; .[$entry.file] += $entry.issues) | to_entries | map({file: .key, issues: .value | unique_by(.ruleId, .message)})' report/final-ghas.json > deduplicated/deduplicated-ghas.json
+
+      - name: Upload Deduplicated JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: deduplicated-ghas-json
+          path: deduplicated/deduplicated-ghas.json
+
+  generate-html:
+    name: Generate HTML Report
+    runs-on: ubuntu-latest
+    needs: deduplicate-issues
+
+    steps:
+      - name: Download Final JSON
+        uses: actions/download-artifact@v4
+        with:
+          name: combined-ghas-json
+          path: .
+
+      - name: Generate HTML
+        run: |
+          JSON="final-ghas.json"
+          HTML="ghas-report.html"
+          {
+            echo "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>GHAS Combined Report</title>"
+            echo "<style>
+              body { font-family: Arial; padding: 20px; max-width: 1200px; margin: 0 auto; }
+              h1, h2, h3 { color: #2c3e50; }
+              pre { background: #f4f4f4; padding: 10px; border: 1px solid #ccc; white-space: pre-wrap; }
+              .issue { border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 5px; }
+              .summary-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+              .summary-table th, .summary-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              .summary-table th { background-color: #f2f2f2; }
+              .summary-table tr:nth-child(even) { background-color: #f9f9f9; }
+              .warning { color: #f39c12; }
+              .danger { color: #e74c3c; }
+              .safe { color: #27ae60; }
+              .summary-card { margin-bottom: 30px; padding: 15px; border-radius: 5px; background-color: #f8f9fa; border: 1px solid #e9ecef; }
+              .language-section { margin-top: 40px; border-top: 2px solid #eee; padding-top: 20px; }
+            </style></head><body>"
+            echo "<h1>🔍 GHAS Consolidated Report</h1>"
+            echo "<div class='summary-card'>"
+            echo "<h2>📊 Summary</h2>"
+            echo "<table class='summary-table'>"
+            echo "<tr><th>Language</th><th>Files Scanned</th><th>Lines Scanned</th><th>Issues Found</th><th>Status</th></tr>"
+            # First, create a summary table at the top
+            totalFiles=0
+            totalLines=0
+            totalIssues=0
+
+            jq -c '.[]' "$JSON" | while read -r entry; do
+              lang=$(echo "$entry" | jq -r '.language')
+              fcount=$(echo "$entry" | jq -r '.fileCount')
+              lcount=$(echo "$entry" | jq -r '.lineCount')
+              supported=$(echo "$entry" | jq -r '.supported')
+              icount=$(echo "$entry" | jq -r '.issues | length')
+
+              totalFiles=$((totalFiles + fcount))
+              totalLines=$((totalLines + lcount))
+              totalIssues=$((totalIssues + icount))
+
+              statusClass="safe"
+              statusText="No Issues"
+
+              if [ "$supported" != "true" ]; then
+                statusClass="warning"
+                statusText="Not Supported"
+              elif [ "$icount" -gt 0 ]; then
+                statusClass="danger"
+                statusText="Issues Found"
+              fi
+
+              echo "<tr><td><strong>$lang</strong></td><td>$fcount</td><td>$lcount</td><td class='$statusClass'><strong>$icount</strong></td><td class='$statusClass'>$statusText</td></tr>"
+            done
+
+            # Calculate totals using jq
+            TOTAL_FILES=$(jq '[.[].fileCount] | add' "$JSON")
+            TOTAL_LINES=$(jq '[.[].lineCount] | add' "$JSON")
+            TOTAL_ISSUES=$(jq '[.[].issues | length] | add' "$JSON")
+
+            # Add the totals row to the HTML table
+            echo "<tr style='font-weight: bold; background-color: #e9ecef;'><td>TOTAL</td><td>$TOTAL_FILES</td><td>$TOTAL_LINES</td><td>$TOTAL_ISSUES</td><td></td></tr>"
+            echo "</table>"
+            echo "</div>"
+            # Then list all issues grouped by language
+            echo "<h2>🔎 Detailed Issues by Language</h2>"
+            
+            jq -c '.[]' "$JSON" | while read -r entry; do
+              lang=$(echo "$entry" | jq -r '.language')
+              icount=$(echo "$entry" | jq -r '.issues | length')
+              supported=$(echo "$entry" | jq -r '.supported')
+              echo "<div class='language-section'>"
+              echo "<h2>📁 $lang</h2>"
+              
+              if [ "$supported" != "true" ]; then
+                echo "<p class='warning'><strong>Status:</strong> Language not supported by CodeQL</p>"
+              elif [ "$icount" -gt 0 ]; then
+                echo "<h3>Found Issues:</h3>"
+                echo "$entry" | jq -c '.issues[]' | while read -r issue; do
+                  rule=$(echo "$issue" | jq -r '.ruleId')
+                  msg=$(echo "$issue" | jq -r '.message')
+                  file=$(echo "$issue" | jq -r '.file')
+                  line=$(echo "$issue" | jq -r '.line')
+                  code=$(echo "$issue" | jq -r '.snippet' | sed ':a;N;$!ba;s/\n/<br>/g')
+                  explanation=$(echo "$issue" | jq -r '.explanation')
+                  remediation=$(echo "$issue" | jq -r '.remediation')
+                  echo "<div class='issue'>"
+                  echo "<h3>🔹 Rule: $rule</h3>"
+                  echo "<p><strong>File:</strong> $file:$line</p>"
+                  echo "<p><strong>Finding:</strong> $msg</p>"
+                  echo "<p><strong>Code Snippet:</strong></p><pre>${code}</pre>"
+                  echo "<p><strong>Explanation:</strong> $explanation</p>"
+                  echo "<p><strong>Remediation:</strong> $remediation</p>"
+                  echo "</div>"
+                done
+              else
+                echo "<p class='safe'><strong>✅ No issues found</strong></p>"
+              fi
+              echo "</div>"
+            done
+            echo "<hr>"
+            echo "<footer><p>Generated on $(date)</p></footer>"
+            echo "</body></html>"
+          } > $HTML
+
+      - name: Upload HTML Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: GHAS-HTML-Report
+          path: ghas-report.html
+
+  generate-pdf:
+    name: Generate PDF Report
+    runs-on: ubuntu-latest
+    needs: generate-html
+
+    steps:
+      - name: Download HTML Report
+        uses: actions/download-artifact@v4
+        with:
+          name: GHAS-HTML-Report
+          path: .
+
+      - name: Generate PDF from HTML
+        run: |
+          apt-get update && apt-get install -y wkhtmltopdf
+          wkhtmltopdf ghas-report.html ghas-report.pdf
+
+      - name: Upload PDF Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: GHAS-PDF-Report
+          path: ghas-report.pdf
