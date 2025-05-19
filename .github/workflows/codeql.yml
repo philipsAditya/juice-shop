@@ -34,6 +34,13 @@ jobs:
           output: sarif-results
           category: '/language:${{ matrix.language }}'
 
+      - name: Upload SARIF File
+        if: steps.init.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF-File
+          path: sarif-results/*.sarif
+
       - name: Generate fallback JSON if CodeQL failed
         if: steps.init.outcome != 'success'
         run: |
