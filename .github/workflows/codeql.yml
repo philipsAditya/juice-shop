@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, javascript, html, scss, solidity, pug]
+        language: [javascript, html, scss, solidity, pug]
 
     steps:
       - name: Checkout code
@@ -128,33 +128,10 @@ jobs:
           name: combined-ghas-json
           path: report/final-ghas.json
 
-  deduplicate-issues:
-    name: Deduplicate Issues
-    runs-on: ubuntu-latest
-    needs: combine-json
-
-    steps:
-      - name: Download Combined JSON
-        uses: actions/download-artifact@v4
-        with:
-          name: combined-ghas-json
-          path: .
-
-      - name: Deduplicate Issues
-        run: |
-          mkdir -p deduplicated
-          jq 'reduce .[] as $entry ({}; .[$entry.file] //= []; .[$entry.file] += $entry.issues) | to_entries | map({file: .key, issues: (.value | unique_by(.ruleId; .message))})' report/final-ghas.json > deduplicated/deduplicated-ghas.json
-
-      - name: Upload Deduplicated JSON
-        uses: actions/upload-artifact@v4
-        with:
-          name: deduplicated-ghas-json
-          path: deduplicated/deduplicated-ghas.json
-
   generate-html:
     name: Generate HTML Report
     runs-on: ubuntu-latest
-    needs: deduplicate-issues
+    needs: combine-json
 
     steps:
       - name: Download Final JSON
@@ -274,26 +251,3 @@ jobs:
         with:
           name: GHAS-HTML-Report
           path: ghas-report.html
-
-  generate-pdf:
-    name: Generate PDF Report
-    runs-on: ubuntu-latest
-    needs: generate-html
-
-    steps:
-      - name: Download HTML Report
-        uses: actions/download-artifact@v4
-        with:
-          name: GHAS-HTML-Report
-          path: .
-
-      - name: Generate PDF from HTML
-        run: |
-          apt-get update && apt-get install -y wkhtmltopdf
-          wkhtmltopdf ghas-report.html ghas-report.pdf
-
-      - name: Upload PDF Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: GHAS-PDF-Report
-          path: ghas-report.pdf
