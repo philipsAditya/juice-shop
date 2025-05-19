@@ -49,10 +49,7 @@ jobs:
           # Set file extensions based on language
           case "${{ matrix.language }}" in
             "javascript")
-              EXTENSIONS="js jsx mjs cjs"
-              ;;
-            "typescript")
-              EXTENSIONS="ts tsx"
+              EXTENSIONS="js jsx mjs cjs ts tsx"
               ;;
             "html")
               EXTENSIONS="html htm"
