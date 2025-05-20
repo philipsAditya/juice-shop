@@ -53,56 +53,24 @@ jobs:
           mkdir -p combined-json
           SARIF=$(find sarif-results -name "*.sarif" | head -n 1)
 
-          # Set file extensions based on language
-          case "${{ matrix.language }}" in
-            "javascript")
-              EXTENSIONS="js jsx mjs cjs ts tsx"
-              ;;
-            "html")
-              EXTENSIONS="html htm"
-              ;;
-            "scss")
-              EXTENSIONS="scss sass css"
-              ;;
-            "solidity")
-              EXTENSIONS="sol"
-              ;;
-            "pug")
-              EXTENSIONS="pug jade"
-              ;;
-            *)
-              EXTENSIONS="${{ matrix.language }}"
-              ;;
-          esac
-
-          # Count files and lines for the language
-          FILE_COUNT=0
-          LINE_COUNT=0
-          for ext in $EXTENSIONS; do
-            count=$(find . -type f -name "*.$ext" | wc -l || echo 0)
-            FILE_COUNT=$((FILE_COUNT + count))
-            lines=$(find . -type f -name "*.$ext" -exec cat {} + 2>/dev/null | wc -l || echo 0)
-            LINE_COUNT=$((LINE_COUNT + lines))
-          done
-
-          jq --arg lang "${{ matrix.language }}" \
-             --argjson fileCount $FILE_COUNT \
-             --argjson lineCount $LINE_COUNT \
-             'reduce .runs[].results[] as $result ([]; . + [{
-               "ruleId": $result.ruleId,
-               "shortDescription": $result.message.text,
-               "fullDescription": $result.partialFingerprints.explanation,
-               "problem.severity": $result.level,
-               "precision": ($result.level + " (Security Severity: " + ($result.partialFingerprints["security-severity"] // "N/A") + ")"),
-               "Issue-Description": $result.partialFingerprints.explanation,
-               "Explanation": $result.partialFingerprints.explanation
-             }]) | {
-               "language": $lang,
-               "fileCount": $fileCount,
-               "lineCount": $lineCount,
-               "supported": true,
-               "issues": .
-             }' "$SARIF" > combined-json/${{ matrix.language }}.json
+          # Extract relevant fields from SARIF and map them to JSON
+          jq '{
+            "language": "${{ matrix.language }}",
+            "fileCount": (reduce .runs[].results[] as $result (0; . + 1)),
+            "lineCount": (reduce .runs[].results[] as $result (0; . + ($result.locations[0].physicalLocation.region.endLine - $result.locations[0].physicalLocation.region.startLine + 1))),
+            "issues": [
+              .runs[].results[] | {
+                "ruleId": .ruleId,
+                "shortDescription": .message.text,
+                "fullDescription": (.partialFingerprints.explanation // "No full description available."),
+                "severity": (.level // "unknown"),
+                "precision": (.level + " (Security Severity: " + (.partialFingerprints["security-severity"] // "N/A") + ")"),
+                "file": (.locations[0].physicalLocation.artifactLocation.uri // "Unknown"),
+                "line": (.locations[0].physicalLocation.region.startLine // "Unknown"),
+                "snippet": (.locations[0].physicalLocation.region.snippet.text // "No code snippet available.")
+              }
+            ]
+          }' "$SARIF" > combined-json/${{ matrix.language }}.json
 
       - name: Upload Language JSON
         uses: actions/upload-artifact@v4
@@ -179,7 +147,6 @@ jobs:
               lang=$(echo "$entry" | jq -r '.language')
               fcount=$(echo "$entry" | jq -r '.fileCount')
               lcount=$(echo "$entry" | jq -r '.lineCount')
-              supported=$(echo "$entry" | jq -r '.supported')
               icount=$(echo "$entry" | jq -r '.issues | length')
 
               totalFiles=$((totalFiles + fcount))
@@ -225,19 +192,17 @@ jobs:
                 echo "<h3>Found Issues:</h3>"
                 echo "$entry" | jq -c '.issues[]' | while read -r issue; do
                   rule=$(echo "$issue" | jq -r '.ruleId')
-                  msg=$(echo "$issue" | jq -r '.message')
+                  msg=$(echo "$issue" | jq -r '.shortDescription')
                   file=$(echo "$issue" | jq -r '.file')
                   line=$(echo "$issue" | jq -r '.line')
                   code=$(echo "$issue" | jq -r '.snippet' | sed ':a;N;$!ba;s/\n/<br>/g')
-                  explanation=$(echo "$issue" | jq -r '.explanation')
-                  remediation=$(echo "$issue" | jq -r '.remediation')
+                  explanation=$(echo "$issue" | jq -r '.fullDescription')
                   echo "<div class='issue'>"
                   echo "<h3>🔹 Rule: $rule</h3>"
                   echo "<p><strong>File:</strong> $file:$line</p>"
                   echo "<p><strong>Finding:</strong> $msg</p>"
                   echo "<p><strong>Code Snippet:</strong></p><pre>${code}</pre>"
                   echo "<p><strong>Explanation:</strong> $explanation</p>"
-                  echo "<p><strong>Remediation:</strong> $remediation</p>"
                   echo "</div>"
                 done
               else
