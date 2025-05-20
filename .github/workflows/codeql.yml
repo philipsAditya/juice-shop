@@ -52,7 +52,7 @@ jobs:
         run: |
           mkdir -p combined-json
           SARIF=$(find sarif-results -name "*.sarif" | head -n 1)
-          
+
           # Set file extensions based on language
           case "${{ matrix.language }}" in
             "javascript")
@@ -74,7 +74,7 @@ jobs:
               EXTENSIONS="${{ matrix.language }}"
               ;;
           esac
-          
+
           # Count files and lines for the language
           FILE_COUNT=0
           LINE_COUNT=0
@@ -84,24 +84,24 @@ jobs:
             lines=$(find . -type f -name "*.$ext" -exec cat {} + 2>/dev/null | wc -l || echo 0)
             LINE_COUNT=$((LINE_COUNT + lines))
           done
-          
+
           jq --arg lang "${{ matrix.language }}" \
              --argjson fileCount $FILE_COUNT \
              --argjson lineCount $LINE_COUNT \
-             '{
-               language: $lang,
-               fileCount: $fileCount,
-               lineCount: $lineCount,
-               supported: true,
-               issues: [.runs[].results[]? | {
-                 ruleId,
-                 message: .message.text,
-                 file: .locations[0].physicalLocation.artifactLocation.uri,
-                 line: .locations[0].physicalLocation.region.startLine,
-                 snippet: (.locations[0].physicalLocation.region.snippet.text // "N/A"),
-                 explanation: (.partialFingerprints.explanation // "N/A"),
-                 remediation: (.partialFingerprints.remediation // "N/A")
-               }]
+             'reduce .runs[].results[] as $result ([]; . + [{
+               "ruleId": $result.ruleId,
+               "shortDescription": $result.message.text,
+               "fullDescription": $result.partialFingerprints.explanation,
+               "problem.severity": $result.level,
+               "precision": ($result.level + " (Security Severity: " + ($result.partialFingerprints["security-severity"] // "N/A") + ")"),
+               "Issue-Description": $result.partialFingerprints.explanation,
+               "Explanation": $result.partialFingerprints.explanation
+             }]) | {
+               "language": $lang,
+               "fileCount": $fileCount,
+               "lineCount": $lineCount,
+               "supported": true,
+               "issues": .
              }' "$SARIF" > combined-json/${{ matrix.language }}.json
 
       - name: Upload Language JSON
